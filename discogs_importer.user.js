@@ -2,10 +2,9 @@
 
 // @name           Import Discogs releases to MusicBrainz
 // @description    Add a button to import Discogs releases to MusicBrainz and add links to matching MusicBrainz entities for various Discogs entities (artist,release,master,label)
-// @version        2021.8.10.1
-// @namespace      http://userscripts.org/users/22504
-// @downloadURL    https://raw.githubusercontent.com/murdos/musicbrainz-userscripts/master/discogs_importer.user.js
-// @updateURL      https://raw.githubusercontent.com/murdos/musicbrainz-userscripts/master/discogs_importer.user.js
+// @version        2021.8.10.2
+// @downloadURL    https://github.com/kaysond/musicbrainz-userscripts/raw/discogs-classical/discogs_importer.user.js
+// @updateURL      https://github.com/kaysond/musicbrainz-userscripts/raw/discogs-classical/discogs_importer.user.js
 // @include        http*://www.discogs.com/*
 // @include        http*://*.discogs.com/*release/*
 // @exclude        http*://*.discogs.com/*release/*?f=xml*
@@ -17,6 +16,11 @@
 // @require        lib/mbimportstyle.js
 // @icon           https://raw.githubusercontent.com/murdos/musicbrainz-userscripts/master/assets/images/Musicbrainz_import_logo.png
 // ==/UserScript==
+
+// **************************************
+// This fork naively fixes subtrack handling, in a way suitable for classical albums
+// ***************************************
+
 
 // prevent JQuery conflicts, see http://wiki.greasespot.net/@grant
 this.$ = this.jQuery = jQuery.noConflict(true);
@@ -628,24 +632,15 @@ function parseDiscogsRelease(discogsRelease) {
         });
     }
 
+
+
     // Inspect tracks
     let heading = '';
     let releaseNumber = 1;
     let lastPosition = 0;
-    $.each(discogsRelease.tracklist, function (index, discogsTrack) {
-        if (discogsTrack.type_ === 'heading') {
-            heading = discogsTrack.title;
-            return;
-        }
-        if (discogsTrack.type_ !== 'track' && discogsTrack.type_ !== 'index') {
-            return;
-        }
 
-        let track = {};
-
-        track.title = discogsTrack.title.replace(/´/g, '’');
-        track.duration = MBImport.hmsToMilliSeconds(discogsTrack.duration); // MB in milliseconds
-
+    function handleTrack(release, discogsTrack, track) {
+      console.log("handling track " + track.title)
         // Track artist credit
         track.artist_credit = [];
         if (discogsTrack.artists) {
@@ -663,36 +658,11 @@ function parseDiscogsRelease(discogsRelease) {
 
         // Track position and release number
         let trackPosition = discogsTrack.position;
-
-        // Handle sub-tracks
-        if (trackPosition === '' && discogsTrack.sub_tracks) {
-            trackPosition = discogsTrack.sub_tracks[0].position;
-            // Append titles of sub-tracks to main track title
-            const subtrack_titles = [];
-            let subtrack_total_duration = 0;
-            $.each(discogsTrack.sub_tracks, function (subtrack_index, subtrack) {
-                if (subtrack.type_ !== 'track') {
-                    return;
-                }
-                if (subtrack.duration) {
-                    subtrack_total_duration += MBImport.hmsToMilliSeconds(subtrack.duration);
-                }
-                if (subtrack.title) {
-                    subtrack_titles.push(subtrack.title);
-                } else {
-                    subtrack_titles.push('[unknown]');
-                }
-            });
-            if (subtrack_titles.length) {
-                if (track.title) {
-                    track.title += ': ';
-                }
-                track.title += subtrack_titles.join(' / ');
-            }
-            if (isNaN(track.duration) && !isNaN(subtrack_total_duration)) {
-                track.duration = subtrack_total_duration;
-            }
+        if (trackPosition == "") {
+          trackPosition = track.position
         }
+          
+          
 
         // Skip special tracks
         if (trackPosition.match(/^(?:video|mp3)/i)) {
@@ -745,6 +715,7 @@ function parseDiscogsRelease(discogsRelease) {
                 lastPosition++;
             }
         }
+      	
 
         // Create release if needed
         let discindex = releaseNumber - 1;
@@ -776,7 +747,56 @@ function parseDiscogsRelease(discogsRelease) {
         if (buggyTrackNumber && !release.maybe_buggy) {
             release.maybe_buggy = true;
         }
-    });
+    };
+
+    function romanize (num) {
+      if (isNaN(num))
+          return NaN;
+      var digits = String(+num).split(""),
+          key = ["","C","CC","CCC","CD","D","DC","DCC","DCCC","CM",
+                 "","X","XX","XXX","XL","L","LX","LXX","LXXX","XC",
+                 "","I","II","III","IV","V","VI","VII","VIII","IX"],
+          roman = "",
+          i = 3;
+      while (i--)
+          roman = (key[+digits.pop() + (i * 10)] || "") + roman;
+      return Array(+digits.join("") + 1).join("M") + roman;
+  	}
+  
+    $.each(discogsRelease.tracklist, function (index, discogsTrack) {
+        if (discogsTrack.type_ === 'heading') {
+            heading = discogsTrack.title;
+            return;
+        }
+        if (discogsTrack.type_ !== 'track' && discogsTrack.type_ !== 'index') {
+            return;
+        }
+
+        let track = {};
+        track.title = discogsTrack.title.replace(/´/g, '’');
+        track.duration = MBImport.hmsToMilliSeconds(discogsTrack.duration); // MB in milliseconds
+
+        // Handle sub-tracks
+        if (discogsTrack.type_ === 'index' && discogsTrack.sub_tracks) {
+            $.each(discogsTrack.sub_tracks, function (subtrack_index, subtrack) {
+                if (subtrack.type_ !== 'track') {
+                    return;
+                }
+
+                let track = {}
+                track.title = (discogsTrack.title + ': ' + romanize(subtrack_index+1) + '. ' + subtrack.title).replace(/`/g, '’') ;
+                track.duration = MBImport.hmsToMilliSeconds(subtrack.duration)
+              	track.position = subtrack.position
+
+                handleTrack(release, discogsTrack, track)
+            })
+            return
+        }
+        else {
+            handleTrack(release, discogsTrack, track)
+        }
+
+    })
 
     if (release.discs.length === 1 && release.discs[0].title) {
         // remove title if there is only one disc
